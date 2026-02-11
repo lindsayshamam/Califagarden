@@ -1,0 +1,157 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Garden Shadow Mapper</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica; background: #1a1a1a; }
+        #ui { position: absolute; bottom: 20px; left: 5%; width: 90%; background: rgba(255,255,255,0.92); 
+              padding: 20px; border-radius: 20px; box-sizing: border-box; box-shadow: 0 10px 30px rgba(0,0,0,0.5); backdrop-filter: blur(10px); }
+        input[type=range] { width: 100%; height: 30px; margin: 10px 0; accent-color: #2e7d32; }
+        label { font-size: 14px; font-weight: bold; color: #1a1a1a; display: block; margin-top: 5px; }
+        .data { font-size: 13px; color: #444; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+        h2 { margin: 0 0 10px 0; font-size: 18px; color: #2e7d32; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h2>🌱 Garden Sun Map</h2>
+        <div class="data" id="sun-info">Awaiting GPS Location...</div>
+        
+        <label>Time of Day</label>
+        <input type="range" id="timeSlider" min="0" max="1439" value="720">
+        
+        <label>Season (Month/Day)</label>
+        <input type="range" id="daySlider" min="0" max="364" value="172">
+    </div>
+
+    <script>
+        // --- 1. ENGINE SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- 2. THE YARD LAYOUT ---
+        // The Ground (Grass)
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(40, 40),
+            new THREE.MeshStandardMaterial({ color: 0x567d46 })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // A House (Central Obstacle)
+        const house = new THREE.Mesh(
+            new THREE.BoxGeometry(8, 5, 8),
+            new THREE.MeshStandardMaterial({ color: 0xeeeeee })
+        );
+        house.position.set(-5, 2.5, -5);
+        house.castShadow = true;
+        house.receiveShadow = true;
+        scene.add(house);
+
+        // A Tree
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 3), new THREE.MeshStandardMaterial({ color: 0x5d4037 }));
+        trunk.position.set(6, 1.5, 4);
+        trunk.castShadow = true;
+        scene.add(trunk);
+        
+        const leaves = new THREE.Mesh(new THREE.SphereGeometry(2, 12, 12), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+        leaves.position.set(6, 4.5, 4);
+        leaves.castShadow = true;
+        scene.add(leaves);
+
+        // Garden Bed (Where you want to plant)
+        const gardenBed = new THREE.Mesh(
+            new THREE.BoxGeometry(4, 0.2, 10),
+            new THREE.MeshStandardMaterial({ color: 0x3e2723 })
+        );
+        gardenBed.position.set(2, 0.1, -2);
+        gardenBed.receiveShadow = true;
+        scene.add(gardenBed);
+
+        // --- 3. SUN LIGHTING ---
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        sunLight.castShadow = true;
+        // High quality shadows
+        sunLight.shadow.camera.left = -20;
+        sunLight.shadow.camera.right = 20;
+        sunLight.shadow.camera.top = 20;
+        sunLight.shadow.camera.bottom = -20;
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        scene.add(sunLight);
+        
+        const ambient = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambient);
+
+        camera.position.set(15, 15, 15);
+        camera.lookAt(0, 0, 0);
+
+        // --- 4. SOLAR CALCULATIONS ---
+        let lat = 34.05, lng = -118.24; 
+        navigator.geolocation.getCurrentPosition(p => {
+            lat = p.coords.latitude; lng = p.coords.longitude;
+            updateSun();
+        });
+
+        function updateSun() {
+            const dayOfYear = parseInt(document.getElementById('daySlider').value);
+            const minutes = parseInt(document.getElementById('timeSlider').value);
+            
+            const date = new Date(new Date().getFullYear(), 0, 1);
+            date.setDate(date.getDate() + dayOfYear);
+            date.setHours(Math.floor(minutes / 60), minutes % 60);
+
+            const sunPos = SunCalc.getPosition(date, lat, lng);
+            
+            const dist = 50;
+            // SunCalc Azimuth is 0 at South, Three.js Z is 0 at North-ish
+            // Adjusting angles for 3D coordinate system
+            sunLight.position.x = dist * Math.sin(sunPos.azimuth) * Math.cos(sunPos.altitude);
+            sunLight.position.y = dist * Math.sin(sunPos.altitude);
+            sunLight.position.z = dist * Math.cos(sunPos.azimuth) * Math.cos(sunPos.altitude);
+
+            const info = document.getElementById('sun-info');
+            info.innerText = `${date.toLocaleDateString('en-US', {month:'long', day:'numeric'})} | ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+            
+            // Sky colors
+            if(sunPos.altitude < 0) {
+                scene.background.setHex(0x050510);
+                sunLight.intensity = 0;
+            } else {
+                scene.background.setHex(0x87ceeb);
+                sunLight.intensity = 1.2;
+            }
+        }
+
+        // Listeners for sliders
+        document.getElementById('timeSlider').addEventListener('input', updateSun);
+        document.getElementById('daySlider').addEventListener('input', updateSun);
+
+        // Handle resizing window/phone orientation
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+        updateSun();
+    </script>
+</body>
+</html>
