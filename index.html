@@ -1,0 +1,161 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Master Garden Heat Map</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: -apple-system, sans-serif; background: #050505; }
+        #ui { position: absolute; bottom: 20px; left: 5%; width: 90%; background: rgba(255,255,255,0.95); 
+              padding: 15px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        input[type=range] { width: 100%; height: 25px; margin: 8px 0; accent-color: #d32f2f; }
+        label { font-size: 11px; font-weight: bold; color: #333; text-transform: uppercase; }
+        .data { font-size: 14px; color: #d32f2f; font-weight: bold; margin-bottom: 5px; }
+        .controls { display: flex; gap: 10px; margin-top: 10px; }
+        button { flex: 1; padding: 10px; border: none; border-radius: 10px; background: #2e7d32; color: white; font-weight: bold; font-size: 12px; }
+        .thermal-grad { width: 100%; height: 8px; background: linear-gradient(to right, blue, cyan, green, yellow, red); border-radius: 4px; margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="data" id="sun-info">Awaiting GPS...</div>
+        <div class="thermal-grad"></div>
+        <label>Time of Day</label>
+        <input type="range" id="timeSlider" min="0" max="1439" value="720">
+        <label>Season (Winter to Summer)</label>
+        <input type="range" id="daySlider" min="0" max="364" value="172">
+        <div class="controls">
+            <button onclick="toggleView()">🔄 Switch to Bird's Eye</button>
+        </div>
+    </div>
+
+    <script>
+        let isBirdsEye = false;
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050510);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // 1. YARD & 2FT GRID
+        const yardGroup = new THREE.Group();
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x0000ff }); // Start Blue (Cold)
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(52, 36), groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        yardGroup.add(ground);
+
+        // Add 2ft Grid Markers
+        const grid = new THREE.GridHelper(52, 26, 0x444444, 0x222222);
+        grid.position.y = 0.05;
+        grid.material.opacity = 0.5;
+        grid.material.transparent = true;
+        yardGroup.add(grid);
+        scene.add(yardGroup);
+
+        // 2. STRUCTURES
+        function addObj(w, h, d, x, y, z, color=0xeeeeee) {
+            const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), new THREE.MeshStandardMaterial({color}));
+            m.position.set(x,y,z); m.castShadow = true; m.receiveShadow = true;
+            scene.add(m);
+        }
+        addObj(52, 12, 10, 0, 6, -23, 0x4a90e2); // North House
+        addObj(52, 8, 0.5, 0, 4, 18, 0xffffff);  // South Wall (8')
+        addObj(0.5, 6, 36, 26, 3, 0, 0xcccccc); // East Wall (6')
+        addObj(0.5, 6, 36, -26, 3, 0, 0xcccccc); // West Wall (6')
+
+        // 3. TREES
+        function addTree(h, rad, x, z) {
+            const t = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, h/2), new THREE.MeshStandardMaterial({color:0x3e2723}));
+            t.position.set(x, h/4, z); t.castShadow = true; scene.add(t);
+            const l = new THREE.Mesh(new THREE.SphereGeometry(rad), new THREE.MeshStandardMaterial({color:0x1b5e20, transparent: true, opacity: 0.9}));
+            l.position.set(x, h*0.8, z); l.castShadow = true; scene.add(l);
+        }
+        addTree(26, 9, -28, 18); // SW Neighbor Tree
+        addTree(12, 4, 21, 13);  // SE Corner Tree
+
+        // 4. LIGHTING
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        sunLight.castShadow = true;
+        sunLight.shadow.camera.left = -40; sunLight.shadow.camera.right = 40;
+        sunLight.shadow.camera.top = 40; sunLight.shadow.camera.bottom = -40;
+        sunLight.shadow.mapSize.set(2048, 2048);
+        scene.add(sunLight);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+
+        function setCamera() {
+            if (isBirdsEye) {
+                camera.position.set(0, 50, 0);
+                camera.lookAt(0, 0, 0);
+            } else {
+                camera.position.set(0, 40, 40);
+                camera.lookAt(0, 0, 0);
+            }
+        }
+        setCamera();
+
+        window.toggleView = () => {
+            isBirdsEye = !isBirdsEye;
+            setCamera();
+            event.target.innerText = isBirdsEye ? "🔄 Switch to 3D View" : "🔄 Switch to Bird's Eye";
+        };
+
+        // 5. UPDATE LOGIC
+        let lat = 34.05, lng = -118.24;
+        navigator.geolocation.getCurrentPosition(p => {
+            lat = p.coords.latitude; lng = p.coords.longitude;
+            updateSun();
+        }, () => updateSun());
+
+        function updateSun() {
+            const day = parseInt(document.getElementById('daySlider').value);
+            const mins = parseInt(document.getElementById('timeSlider').value);
+            const date = new Date(new Date().getFullYear(), 0, 1);
+            date.setDate(date.getDate() + day);
+            date.setHours(Math.floor(mins/60), mins%60);
+
+            const pos = SunCalc.getPosition(date, lat, lng);
+            const dist = 100;
+
+            sunLight.position.set(
+                dist * Math.sin(pos.azimuth) * Math.cos(pos.altitude),
+                dist * Math.sin(pos.altitude),
+                dist * Math.cos(pos.azimuth) * Math.cos(pos.altitude)
+            );
+
+            // DYNAMIC THERMAL HEAT MAP LOGIC
+            // Blue (Cold) -> Green (Partial) -> Red (Intense Sun)
+            let hue;
+            const altitudeRatio = Math.max(0, Math.sin(pos.altitude)); // 0 to 1
+            if (pos.altitude <= 0) {
+                hue = 0.66; // Night/Deep Blue
+            } else {
+                // Shift from 0.66 (Blue) down to 0.0 (Red) based on sun height
+                hue = 0.66 - (altitudeRatio * 0.66);
+            }
+            groundMat.color.setHSL(hue, 0.8, 0.4);
+
+            document.getElementById('sun-info').innerText = 
+                `${date.toLocaleDateString('en-US', {month:'short', day:'numeric'})} @ ${date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+            
+            scene.background.setHex(pos.altitude > 0 ? 0x87ceeb : 0x050510);
+            sunLight.intensity = pos.altitude > 0 ? 1.2 : 0;
+        }
+
+        document.querySelectorAll('input').forEach(i => i.addEventListener('input', updateSun));
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+        animate();
+    </script>
+</body>
+</html>
