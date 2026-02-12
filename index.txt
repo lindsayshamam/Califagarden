@@ -1,0 +1,138 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Garden Heat & Shadow Map</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: -apple-system, sans-serif; background: #1a1a1a; }
+        #ui { position: absolute; bottom: 20px; left: 5%; width: 90%; background: rgba(255,255,255,0.95); 
+              padding: 15px; border-radius: 20px; box-sizing: border-box; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        input[type=range] { width: 100%; height: 25px; margin: 8px 0; accent-color: #d32f2f; }
+        label { font-size: 11px; font-weight: bold; color: #333; text-transform: uppercase; }
+        .data { font-size: 14px; color: #d32f2f; font-weight: bold; margin-bottom: 5px; }
+        .legend { font-size: 10px; color: #666; margin-top: 5px; display: flex; justify-content: space-between; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="data" id="sun-info">Awaiting GPS...</div>
+        <label>Time of Day</label>
+        <input type="range" id="timeSlider" min="0" max="1439" value="720">
+        <label>Season</label>
+        <input type="range" id="daySlider" min="0" max="364" value="172">
+        <div class="legend">
+            <span>❄️ Winter Shadow Max</span>
+            <span>☀️ Summer Sun Max</span>
+        </div>
+    </div>
+
+    <script>
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // 1. YARD (52' x 36')
+        const groundGeo = new THREE.PlaneGeometry(52, 36);
+        // "Heat map" material - color changes based on sun exposure
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x567d46 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // 2. WALLS & HOUSE
+        function addWall(w, h, d, x, y, z, color=0xeeeeee) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), new THREE.MeshStandardMaterial({color}));
+            mesh.position.set(x,y,z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+        }
+        addWall(52, 12, 10, 0, 6, -23, 0x4a90e2); // North House
+        addWall(52, 8, 0.5, 0, 4, 18);            // South 8' Wall
+        addWall(0.5, 6, 36, 26, 3, 0);           // East 6' Wall
+        addWall(0.5, 6, 36, -26, 3, 0);          // West 6' Wall
+
+        // 3. TREES
+        function addTree(h, radius, x, z) {
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, h/2), new THREE.MeshStandardMaterial({color:0x3e2723}));
+            trunk.position.set(x, h/4, z);
+            trunk.castShadow = true;
+            scene.add(trunk);
+            const leaves = new THREE.Mesh(new THREE.SphereGeometry(radius), new THREE.MeshStandardMaterial({color:0x1b5e20}));
+            leaves.position.set(x, h*0.8, z);
+            leaves.castShadow = true;
+            scene.add(leaves);
+        }
+        // Southwest Neighbor Tree (Huge 26')
+        addTree(26, 8, -28, 18); 
+        // Southeast Corner Tree (12') - 5' from corner
+        addTree(12, 4, 21, 13);
+
+        // 4. LIGHTING & CAMERA
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        sunLight.castShadow = true;
+        sunLight.shadow.camera.left = -40; sunLight.shadow.camera.right = 40;
+        sunLight.shadow.camera.top = 40; sunLight.shadow.camera.bottom = -40;
+        sunLight.shadow.mapSize.set(2048, 2048);
+        scene.add(sunLight);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+        camera.position.set(0, 45, 35);
+        camera.lookAt(0, 0, 0);
+
+        // 5. SUN POSITION LOGIC
+        let lat = 34, lng = -118;
+        navigator.geolocation.getCurrentPosition(p => {
+            lat = p.coords.latitude; lng = p.coords.longitude;
+            updateSun();
+        });
+
+        function updateSun() {
+            const day = parseInt(document.getElementById('daySlider').value);
+            const mins = parseInt(document.getElementById('timeSlider').value);
+            const date = new Date(new Date().getFullYear(), 0, 1);
+            date.setDate(date.getDate() + day);
+            date.setHours(Math.floor(mins/60), mins%60);
+
+            const pos = SunCalc.getPosition(date, lat, lng);
+            const dist = 100;
+
+            sunLight.position.set(
+                dist * Math.sin(pos.azimuth) * Math.cos(pos.altitude),
+                dist * Math.sin(pos.altitude),
+                dist * Math.cos(pos.azimuth) * Math.cos(pos.altitude)
+            );
+
+            // SIMULATED HEAT MAP: Change ground color based on Season
+            // In Summer (index ~172), grass is lighter/warmer. In Winter, it's darker/colder.
+            const summerFactor = Math.sin((day / 365) * Math.PI);
+            groundMat.color.setHSL(0.25 + (summerFactor * 0.1), 0.5, 0.2 + (summerFactor * 0.2));
+
+            document.getElementById('sun-info').innerText = 
+                `${date.toLocaleDateString('en-US', {month:'short', day:'numeric'})} @ ${date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+            
+            scene.background.setHex(pos.altitude > 0 ? 0x87ceeb : 0x050510);
+            sunLight.intensity = pos.altitude > 0 ? 1.2 : 0;
+        }
+
+        document.querySelectorAll('input').forEach(i => i.addEventListener('input', updateSun));
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+        animate(); updateSun();
+    </script>
+</body>
+</html>
